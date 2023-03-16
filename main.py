@@ -34,6 +34,12 @@ from dataset import (
     get_nerf_datasets,
     trivial_collate,
 )
+from render_functions import (
+    get_device,
+    get_points_renderer,
+    render_points
+)
+
 
 
 # Model class containing:
@@ -89,7 +95,7 @@ def render_images(
     device = list(model.parameters())[0].device
 
     for cam_idx, camera in enumerate(cameras):
-        print(f'Rendering image {cam_idx}')
+        #print(f'Rendering image {cam_idx}')
 
         torch.cuda.empty_cache()
         camera = camera.to(device)
@@ -98,23 +104,30 @@ def render_images(
 
         # TODO (1.3): Visualize xy grid using vis_grid
         if cam_idx == 0 and file_prefix == '':
-            pass
+            xy_vis = vis_grid(xy_grid, image_size)
+            plt.imsave(f'{file_prefix}_{cam_idx}_xy_grid.png', xy_vis)
 
         # TODO (1.3): Visualize rays using vis_rays
         if cam_idx == 0 and file_prefix == '':
-            pass
-        
+            rays = vis_rays(ray_bundle, image_size)
+            plt.imsave(f'{file_prefix}_{cam_idx}_rays.png', rays)
+
         # TODO (1.4): Implement point sampling along rays in sampler.py
-        pass
+        ray_bundle = model.sampler(ray_bundle)
+        points = ray_bundle.sample_points
+        points = points.reshape(1, -1, 3)
+        #print('Points', points.shape)
 
         # TODO (1.4): Visualize sample points as point cloud
         if cam_idx == 0 and file_prefix == '':
-            pass
+            rend = render_points(f'{file_prefix}_{cam_idx}_points.png', points)
 
         # TODO (1.5): Implement rendering in renderer.py
+        #print('Ray bundle',ray_bundle.shape)
         out = model(ray_bundle)
 
         # Return rendered features (colors)
+        #print('Feature',out['feature'].shape)
         image = np.array(
             out['feature'].view(
                 image_size[1], image_size[0], 3
@@ -124,7 +137,12 @@ def render_images(
 
         # TODO (1.5): Visualize depth
         if cam_idx == 2 and file_prefix == '':
-            pass
+            depth = np.array(
+                out['depth'].view(
+                    image_size[1], image_size[0]
+                ).detach().cpu()
+            )
+            plt.imsave(f'{file_prefix}_{cam_idx}_depth.png', depth)
 
         # Save
         if save:
@@ -200,7 +218,7 @@ def train(
             out = model(ray_bundle)
 
             # TODO (2.2): Calculate loss
-            loss = None
+            loss = torch.mean((out['feature'] - rgb_gt) ** 2)
 
             # Backprop
             optimizer.zero_grad()
@@ -320,7 +338,7 @@ def train_nerf(
             out = model(ray_bundle)
 
             # TODO (3.1): Calculate loss
-            loss = None
+            loss = torch.mean((out['feature'] - rgb_gt) ** 2)
 
             # Take the training step.
             optimizer.zero_grad()
@@ -339,7 +357,7 @@ def train_nerf(
             and len(cfg.training.checkpoint_path) > 0
             and epoch > 0
         ):
-            print(f"Storing checkpoint {checkpoint_path}.")
+            #print(f"Storing checkpoint {checkpoint_path}.")
 
             data_to_store = {
                 "model": model.state_dict(),

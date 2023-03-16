@@ -20,7 +20,7 @@ class SphereSDF(torch.nn.Module):
         )
 
     def forward(self, ray_bundle):
-        sample_points = ray_bundle.sample_points.view(-1, 3)
+        sample_points = ray_bundle.sample_points.reshape(-1, 3)
 
         return torch.linalg.norm(
             sample_points - self.center,
@@ -45,7 +45,7 @@ class BoxSDF(torch.nn.Module):
         )
 
     def forward(self, ray_bundle):
-        sample_points = ray_bundle.sample_points.view(-1, 3)
+        sample_points = ray_bundle.sample_points.reshape(-1, 3)
         diff = torch.abs(sample_points - self.center) - self.side_lengths / 2.0
 
         signed_distance = torch.linalg.norm(
@@ -95,7 +95,7 @@ class SDFVolume(torch.nn.Module):
         ) * self.alpha
 
     def forward(self, ray_bundle):
-        sample_points = ray_bundle.sample_points.view(-1, 3)
+        sample_points = ray_bundle.sample_points.reshape(-1, 3)
         depth_values = ray_bundle.sample_lengths[..., 0]
         deltas = torch.cat(
             (
@@ -174,6 +174,12 @@ class LinearWithRepeat(torch.nn.Linear):
         output2 = F.linear(input[1], self.weight[:, n1:], None)
         return output1 + output2.unsqueeze(-2)
 
+# cfg.n_layers_xyz, # n_layers: int,
+# embedding_dim_xyz, # input_dim: int,
+# cfg.output_dim, # output_dim: int,
+# embedding_dim_dir, # skip_dim: int,
+# cfg.n_hidden_neurons_xyz, # hidden_dim: int,
+# cfg.input_skips, # input_skips,
 
 class MLPWithInputSkips(torch.nn.Module):
     def __init__(
@@ -231,8 +237,23 @@ class NeuralRadianceField(torch.nn.Module):
 
         embedding_dim_xyz = self.harmonic_embedding_xyz.output_dim
         embedding_dim_dir = self.harmonic_embedding_dir.output_dim
+        print(embedding_dim_xyz, embedding_dim_dir)
 
-        pass
+        # Your MLP should take in a RayBundle object in its forward method, and produce color and density for each sample point in the RayBundle.
+        self.mlp = MLPWithInputSkips(
+            cfg.n_layers_xyz, # n_layers: int,
+            embedding_dim_xyz, # input_dim: int,
+            3, # output_dim: int,
+            embedding_dim_dir, # skip_dim: int,
+            cfg.n_hidden_neurons_xyz, # hidden_dim: int,
+            cfg.append_xyz, # input_skips,
+        )
+    
+    def forward(self, ray_bundle):
+        xyz = self.harmonic_embedding_xyz(ray_bundle.sample_points)
+        dir = self.harmonic_embedding_dir(ray_bundle.sample_directions)
+        out = self.mlp.forward(xyz, dir)
+        
 
 
 volume_dict = {
