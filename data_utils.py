@@ -90,3 +90,7 @@ def vis_rays(ray_bundle, image_size):
     rays = np.array(rays.detach().cpu())
 
     return rays
+
+def seed_random_engines(seed):
+    np.random.seed(seed)
+    torch.manual_seed(seed)

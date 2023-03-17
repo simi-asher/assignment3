@@ -29,6 +29,7 @@ from data_utils import (
     create_surround_cameras,
     vis_grid,
     vis_rays,
+    seed_random_engines
 )
 from dataset import (
     get_nerf_datasets,
@@ -40,7 +41,7 @@ from render_functions import (
     render_points
 )
 
-
+seed_random_engines(3)
 
 # Model class containing:
 #   1) Implicit volume defining the scene
@@ -218,7 +219,7 @@ def train(
             out = model(ray_bundle)
 
             # TODO (2.2): Calculate loss
-            loss = torch.mean((out['feature'] - rgb_gt) ** 2)
+            loss = torch.nn.functional.mse_loss(rgb_gt, out['feature'])
 
             # Backprop
             optimizer.zero_grad()
@@ -338,7 +339,7 @@ def train_nerf(
             out = model(ray_bundle)
 
             # TODO (3.1): Calculate loss
-            loss = torch.mean((out['feature'] - rgb_gt) ** 2)
+            loss = torch.nn.functional.mse_loss(rgb_gt, out['feature'])
 
             # Take the training step.
             optimizer.zero_grad()
@@ -377,7 +378,7 @@ def train_nerf(
                     model, create_surround_cameras(4.0, n_poses=20, up=(0.0, 0.0, 1.0), focal_length=2.0),
                     cfg.data.image_size, file_prefix='nerf'
                 )
-                imageio.mimsave('images/part_3.gif', [np.uint8(im * 255) for im in test_images])
+                imageio.mimsave('images/part_4.gif', [np.uint8(im * 255) for im in test_images])
 
 
 @hydra.main(config_path='./configs', config_name='sphere')

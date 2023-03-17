@@ -16,25 +16,6 @@ class VolumeRenderer(torch.nn.Module):
         self._chunk_size = cfg.chunk_size
         self._white_background = cfg.white_background if 'white_background' in cfg else False
 
-    # def _compute_weights(
-    #     self,
-    #     deltas: torch.Tensor, # torch.Size([32768, 64, 1])
-    #     rays_density: torch.Tensor, # torch.Size([32768, 64, 1])
-    #     eps: float = 1e-10
-    # ):
-    #     # TODO (1.5): Compute transmittance using the equation described in the README
-    #     T = [torch.ones_like(deltas[:, 0])]
-
-    #     for i in range(1, deltas.shape[1]):
-    #         row = T[i - 1] * torch.exp(-(rays_density[:, i - 1] * deltas[:, i - 1]))
-    #         T.append(row)
-    #     T = torch.stack(T, dim=1)
-
-    #     weights = T * (1 - torch.exp(-rays_density * deltas)) + eps
-
-    #     # TODO (1.5): Compute weight used for rendering from transmittance and density
-    #     return weights
-
     def _compute_weights(
         self,
         deltas,

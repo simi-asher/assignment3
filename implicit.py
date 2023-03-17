@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from ray_utils import RayBundle
+from typing import Tuple
 
 
 # Sphere SDF class
@@ -130,7 +131,6 @@ class SDFVolume(torch.nn.Module):
 class HarmonicEmbedding(torch.nn.Module):
     def __init__(
         self,
-        in_channels: int = 3,
         n_harmonic_functions: int = 6,
         omega0: float = 1.0,
         logspace: bool = True,
@@ -151,20 +151,18 @@ class HarmonicEmbedding(torch.nn.Module):
                 dtype=torch.float32,
             )
 
-        self.register_buffer("_frequencies", omega0 * frequencies, persistent=False)
-        self.include_input = include_input
-        self.output_dim = n_harmonic_functions * 2 * in_channels
+        self.register_buffer("_frequencies", frequencies * omega0, persistent=False)
+        self.append_input = include_input
 
-        if self.include_input:
-            self.output_dim += in_channels
-
-    def forward(self, x: torch.Tensor):
-        embed = (x[..., None] * self._frequencies).view(*x.shape[:-1], -1)
-
-        if self.include_input:
-            return torch.cat((embed.sin(), embed.cos(), x), dim=-1)
-        else:
-            return torch.cat((embed.sin(), embed.cos()), dim=-1)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        embed = (x[..., None] * self._frequencies).reshape(*x.shape[:-1], -1)
+        embed = torch.cat(
+            (embed.sin(), embed.cos(), x)
+            if self.append_input
+            else (embed.sin(), embed.cos()),
+            dim=-1,
+        )
+        return embed
 
 
 class LinearWithRepeat(torch.nn.Linear):
@@ -174,13 +172,6 @@ class LinearWithRepeat(torch.nn.Linear):
         output2 = F.linear(input[1], self.weight[:, n1:], None)
         return output1 + output2.unsqueeze(-2)
 
-# cfg.n_layers_xyz, # n_layers: int,
-# embedding_dim_xyz, # input_dim: int,
-# cfg.output_dim, # output_dim: int,
-# embedding_dim_dir, # skip_dim: int,
-# cfg.n_hidden_neurons_xyz, # hidden_dim: int,
-# cfg.input_skips, # input_skips,
-
 class MLPWithInputSkips(torch.nn.Module):
     def __init__(
         self,
@@ -189,12 +180,10 @@ class MLPWithInputSkips(torch.nn.Module):
         output_dim: int,
         skip_dim: int,
         hidden_dim: int,
-        input_skips,
+        input_skips: Tuple[int, ...] = (),
     ):
         super().__init__()
-
         layers = []
-
         for layeri in range(n_layers):
             if layeri == 0:
                 dimin = input_dim
@@ -205,8 +194,8 @@ class MLPWithInputSkips(torch.nn.Module):
             else:
                 dimin = hidden_dim
                 dimout = hidden_dim
-
             linear = torch.nn.Linear(dimin, dimout)
+            _xavier_init(linear)
             layers.append(torch.nn.Sequential(linear, torch.nn.ReLU(True)))
 
         self.mlp = torch.nn.ModuleList(layers)
@@ -214,15 +203,15 @@ class MLPWithInputSkips(torch.nn.Module):
 
     def forward(self, x: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         y = x
-
         for li, layer in enumerate(self.mlp):
             if li in self._input_skips:
                 y = torch.cat((y, z), dim=-1)
 
             y = layer(y)
-
         return y
 
+def _xavier_init(linear):
+    torch.nn.init.xavier_uniform_(linear.weight.data)
 
 # TODO (3.1): Implement NeRF MLP
 class NeuralRadianceField(torch.nn.Module):
@@ -231,30 +220,87 @@ class NeuralRadianceField(torch.nn.Module):
         cfg,
     ):
         super().__init__()
+        self.harmonic_embedding_xyz = HarmonicEmbedding(cfg.n_harmonic_functions_xyz)
+        self.harmonic_embedding_dir = HarmonicEmbedding(cfg.n_harmonic_functions_dir)
+        embedding_dim_xyz = cfg.n_harmonic_functions_xyz * 2 * 3 + 3
+        embedding_dim_dir = cfg.n_harmonic_functions_dir * 2 * 3 + 3
 
-        self.harmonic_embedding_xyz = HarmonicEmbedding(3, cfg.n_harmonic_functions_xyz)
-        self.harmonic_embedding_dir = HarmonicEmbedding(3, cfg.n_harmonic_functions_dir)
-
-        embedding_dim_xyz = self.harmonic_embedding_xyz.output_dim
-        embedding_dim_dir = self.harmonic_embedding_dir.output_dim
-        print(embedding_dim_xyz, embedding_dim_dir)
-
-        # Your MLP should take in a RayBundle object in its forward method, and produce color and density for each sample point in the RayBundle.
-        self.mlp = MLPWithInputSkips(
-            cfg.n_layers_xyz, # n_layers: int,
-            embedding_dim_xyz, # input_dim: int,
-            3, # output_dim: int,
-            embedding_dim_dir, # skip_dim: int,
-            cfg.n_hidden_neurons_xyz, # hidden_dim: int,
-            cfg.append_xyz, # input_skips,
+        self.mlp_xyz = MLPWithInputSkips(
+            cfg.n_layers_xyz,
+            embedding_dim_xyz,
+            cfg.n_hidden_neurons_xyz,
+            embedding_dim_xyz,
+            cfg.n_hidden_neurons_xyz,
+            input_skips=cfg.append_xyz,
         )
-    
-    def forward(self, ray_bundle):
-        xyz = self.harmonic_embedding_xyz(ray_bundle.sample_points)
-        dir = self.harmonic_embedding_dir(ray_bundle.sample_directions)
-        out = self.mlp.forward(xyz, dir)
-        
 
+        self.intermediate_linear = torch.nn.Linear(
+            cfg.n_hidden_neurons_xyz, cfg.n_hidden_neurons_xyz
+        )
+        _xavier_init(self.intermediate_linear)
+
+        self.density_layer = torch.nn.Linear(cfg.n_hidden_neurons_xyz, 1)
+        _xavier_init(self.density_layer)
+        self.density_layer.bias.data[:] = 0.0
+
+        self.color_layer = torch.nn.Sequential(
+            LinearWithRepeat(
+                cfg.n_hidden_neurons_xyz + embedding_dim_dir, cfg.n_hidden_neurons_dir
+            ),
+            torch.nn.ReLU(True),
+            torch.nn.Linear(cfg.n_hidden_neurons_dir, 3),
+            torch.nn.Sigmoid(),
+        )
+        # NOTES:
+        # Use ray bundles dir values into embedding and 
+        # same embedding from mlp, concat embedding to o/p and pass to rgb layer
+        # num rays * num samples/rays * hidden_layer_dim
+        # RGB layer last 3
+        # density layer to 1
+
+    def get_densities(
+        self,
+        features: torch.Tensor,
+    ) -> torch.Tensor:
+        raw_densities = self.density_layer(features)
+        densities = torch.relu(raw_densities)
+        return densities
+
+    def get_colors(
+        self, features: torch.Tensor, rays_directions: torch.Tensor
+    ) -> torch.Tensor:
+        # Normalize the ray_directions to unit l2 norm.
+        rays_directions_normed = torch.nn.functional.normalize(rays_directions, dim=-1)
+        rays_embedding = self.harmonic_embedding_dir(rays_directions_normed)
+
+        return self.color_layer((self.intermediate_linear(features), rays_embedding))
+
+    def get_densities_and_colors(
+        self, features: torch.Tensor, ray_bundle: RayBundle
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        rays_densities = self.get_densities(
+            features
+        )
+        rays_colors = self.get_colors(features, ray_bundle.directions)
+        return rays_densities, rays_colors
+
+    def forward(
+        self,
+        ray_bundle: RayBundle,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        embeds_xyz = self.harmonic_embedding_xyz(ray_bundle.sample_points)
+        features = self.mlp_xyz(embeds_xyz, embeds_xyz)
+        rays_densities, rays_colors = self.get_densities_and_colors(
+            features, ray_bundle
+        )
+        out = {
+            'density': rays_densities,
+            'feature': rays_colors,
+        }
+        return out
+
+        
 
 volume_dict = {
     'sdf_volume': SDFVolume,
